@@ -83,13 +83,4 @@ It helps motivate further improvements and new features.
 **Aman Kumar**
 GitHub: [https://github.com/FluxAman](https://github.com/FluxAman)
 
----
 
-If you want, next I can:
-
-* Simplify this README for beginners
-* Make it more “startup-style”
-* Add screenshots section
-* Rewrite it in Hinglish
-
-This one is solid and publish-ready.
