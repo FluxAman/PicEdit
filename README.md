@@ -1,8 +1,4 @@
-Here you go. Clean, professional, and actually readable by humans. No jokes inside the README, because this is meant to represent your work, not my personality.
 
-You can copy-paste this directly into **README.md**.
-
----
 
 # Pic-Resize 🎨📸
 
