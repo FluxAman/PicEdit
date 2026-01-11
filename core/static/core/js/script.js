@@ -1,34 +1,41 @@
 /**
- * ProResize - Client-side Image Processing
- * Modularized structure for better maintainability
+ * PicEdit - Client-side Image Processing
+ * Features: Resize, Compress, Filters, Crop
  */
 
-const ProResize = {
-    // Application State
+const PicEdit = {
     state: {
-        images: [],
         currentImage: null,
         originalImage: null,
-        processedImages: [],
+        originalFileSize: 0,
         aspectRatioLocked: true,
         originalAspectRatio: 1,
+        compressedBlob: null,
         filters: {
             brightness: 100,
             contrast: 100,
             saturation: 100,
             blur: 0
+        },
+        crop: {
+            isDragging: false,
+            isResizing: false,
+            resizeHandle: null,
+            startX: 0,
+            startY: 0,
+            imageScale: 1,
+            startRect: { x: 0, y: 0, width: 0, height: 0 }
         }
     },
 
-    // DOM Elements Cache
     dom: {},
 
-    // Initialization
     init() {
         this.cacheDOM();
         this.bindEvents();
         this.ui.initTabs();
         this.ui.initControls();
+        this.crop.init();
     },
 
     cacheDOM() {
@@ -43,92 +50,273 @@ const ProResize = {
             processedPreview: document.getElementById('processedPreview'),
             comparisonView: document.getElementById('comparisonView'),
             singleView: document.getElementById('singleView'),
+            previewImageContainer: document.getElementById('previewImageContainer'),
             imageMetadata: document.getElementById('imageMetadata'),
             originalInfo: document.getElementById('originalInfo'),
             processedInfo: document.getElementById('processedInfo'),
-            batchGallery: document.getElementById('batchGallery'),
-            batchCount: document.getElementById('batchCount'),
             downloadSection: document.getElementById('downloadSection'),
             downloadBtn: document.getElementById('downloadBtn'),
-            downloadAllBtn: document.getElementById('downloadAllBtn'),
-            progressContainer: document.getElementById('progressContainer'),
-            progressFill: document.getElementById('progressFill'),
-            progressText: document.getElementById('progressText'),
-            // Controls
             width: document.getElementById('width'),
             height: document.getElementById('height'),
-            resizeMode: document.getElementById('resizeMode'),
             outputFormat: document.getElementById('outputFormat'),
-            quality: document.getElementById('quality'),
-            qualityValue: document.getElementById('qualityValue'),
-            downloadQuality: document.getElementById('downloadQuality'),
             downloadFormat: document.getElementById('downloadFormat'),
-            downloadQualityGroup: document.getElementById('downloadQualityGroup'),
-            // Auth
-            authModal: document.getElementById('authModal')
+            targetSize: document.getElementById('targetSize'),
+            currentSizeDisplay: document.getElementById('currentSizeDisplay'),
+            estimatedSizeDisplay: document.getElementById('estimatedSizeDisplay'),
+            cropWidth: document.getElementById('cropWidth'),
+            cropHeight: document.getElementById('cropHeight'),
+            cropX: document.getElementById('cropX'),
+            cropY: document.getElementById('cropY'),
+            cropRatio: document.getElementById('cropRatio'),
+            cropOriginalSize: document.getElementById('cropOriginalSize'),
+            cropSelection: document.getElementById('cropSelection'),
+            cropDimensions: document.getElementById('cropDimensions')
         };
     },
 
     bindEvents() {
         const d = this.dom;
 
-        // Upload
         d.imageInput?.addEventListener('change', (e) => this.handlers.handleFileSelect(e));
         d.uploadZone?.addEventListener('click', () => d.imageInput.click());
-
-        // Drag & Drop
         d.uploadZone?.addEventListener('dragover', (e) => { e.preventDefault(); d.uploadZone.classList.add('dragover'); });
         d.uploadZone?.addEventListener('dragleave', (e) => { e.preventDefault(); d.uploadZone.classList.remove('dragover'); });
         d.uploadZone?.addEventListener('drop', (e) => this.handlers.handleDrop(e));
 
-        // Processing Actions
         document.getElementById('applyResize')?.addEventListener('click', () => this.editor.applyResize());
+        document.getElementById('applyCompress')?.addEventListener('click', () => this.editor.applyCompress());
         document.getElementById('applyFilters')?.addEventListener('click', () => this.editor.applyFilters());
         document.getElementById('applyCrop')?.addEventListener('click', () => this.editor.applyCrop());
-        document.getElementById('processBatch')?.addEventListener('click', () => this.editor.processBatch());
 
-        // UI Actions
         document.getElementById('compareBtn')?.addEventListener('click', () => this.ui.toggleComparison());
         document.getElementById('resetBtn')?.addEventListener('click', () => this.editor.resetImage());
         document.getElementById('lockAspect')?.addEventListener('click', () => this.ui.toggleAspectLock());
 
-        // Downloads
         d.downloadBtn?.addEventListener('click', () => this.handlers.downloadImage());
-        d.downloadAllBtn?.addEventListener('click', () => this.handlers.downloadAllAsZip());
 
-        // Presets & Filters
         document.querySelectorAll('.preset-btn[data-filter]').forEach(btn => {
             btn.addEventListener('click', () => this.ui.applyPresetFilter(btn.dataset.filter));
         });
 
-        // Auth Modal Close
-        d.authModal?.querySelector('.close-modal')?.addEventListener('click', () => {
-            d.authModal.style.display = 'none';
-        });
-        window.addEventListener('click', (e) => {
-            if (e.target === d.authModal) d.authModal.style.display = 'none';
+        d.targetSize?.addEventListener('input', () => this.ui.updateEstimatedSize());
+        document.getElementById('cropRatio')?.addEventListener('change', (e) => this.ui.applyCropPreset(e.target.value));
+
+        // Feature badge clicks in header
+        document.querySelectorAll('.feature-badge[data-tab]').forEach(badge => {
+            badge.addEventListener('click', () => {
+                const tab = badge.dataset.tab;
+                if (PicEdit.state.currentImage) {
+                    this.ui.switchTab(tab);
+                } else {
+                    this.ui.showToast('Please upload an image first', 'info');
+                }
+            });
         });
     },
 
-    // Event Handlers
+    // Crop Module
+    crop: {
+        init() {
+            const selection = PicEdit.dom.cropSelection;
+            if (!selection) return;
+
+            // Handle resize from corners/edges
+            document.querySelectorAll('.crop-handle').forEach(handle => {
+                handle.addEventListener('mousedown', (e) => {
+                    e.stopPropagation();
+                    this.startResize(e, handle.dataset.handle);
+                });
+            });
+
+            // Handle move (drag the selection)
+            selection.addEventListener('mousedown', (e) => {
+                if (e.target.classList.contains('crop-handle')) return;
+                this.startDrag(e);
+            });
+
+            // Global mouse events
+            document.addEventListener('mousemove', (e) => this.onMouseMove(e));
+            document.addEventListener('mouseup', () => this.onMouseUp());
+        },
+
+        startResize(e, handle) {
+            const sel = PicEdit.dom.cropSelection;
+            const img = PicEdit.dom.preview;
+
+            PicEdit.state.crop.isResizing = true;
+            PicEdit.state.crop.resizeHandle = handle;
+            PicEdit.state.crop.startX = e.clientX;
+            PicEdit.state.crop.startY = e.clientY;
+            PicEdit.state.crop.startRect = {
+                x: parseInt(sel.style.left) || 0,
+                y: parseInt(sel.style.top) || 0,
+                width: parseInt(sel.style.width) || 100,
+                height: parseInt(sel.style.height) || 100
+            };
+            PicEdit.state.crop.imageScale = PicEdit.state.currentImage.width / img.offsetWidth;
+        },
+
+        startDrag(e) {
+            const sel = PicEdit.dom.cropSelection;
+            const img = PicEdit.dom.preview;
+
+            PicEdit.state.crop.isDragging = true;
+            PicEdit.state.crop.startX = e.clientX;
+            PicEdit.state.crop.startY = e.clientY;
+            PicEdit.state.crop.startRect = {
+                x: parseInt(sel.style.left) || 0,
+                y: parseInt(sel.style.top) || 0,
+                width: parseInt(sel.style.width) || 100,
+                height: parseInt(sel.style.height) || 100
+            };
+            PicEdit.state.crop.imageScale = PicEdit.state.currentImage.width / img.offsetWidth;
+        },
+
+        onMouseMove(e) {
+            const state = PicEdit.state.crop;
+            if (!state.isDragging && !state.isResizing) return;
+
+            const img = PicEdit.dom.preview;
+            const sel = PicEdit.dom.cropSelection;
+            const imgWidth = img.offsetWidth;
+            const imgHeight = img.offsetHeight;
+
+            const dx = e.clientX - state.startX;
+            const dy = e.clientY - state.startY;
+            const sr = state.startRect;
+
+            let x = sr.x, y = sr.y, w = sr.width, h = sr.height;
+
+            if (state.isDragging) {
+                x = Math.max(0, Math.min(sr.x + dx, imgWidth - sr.width));
+                y = Math.max(0, Math.min(sr.y + dy, imgHeight - sr.height));
+            } else if (state.isResizing) {
+                const handle = state.resizeHandle;
+
+                if (handle.includes('e')) {
+                    w = Math.max(20, Math.min(sr.width + dx, imgWidth - sr.x));
+                }
+                if (handle.includes('w')) {
+                    const newX = sr.x + dx;
+                    const newW = sr.width - dx;
+                    if (newX >= 0 && newW >= 20) {
+                        x = newX;
+                        w = newW;
+                    }
+                }
+                if (handle.includes('s')) {
+                    h = Math.max(20, Math.min(sr.height + dy, imgHeight - sr.y));
+                }
+                if (handle.includes('n')) {
+                    const newY = sr.y + dy;
+                    const newH = sr.height - dy;
+                    if (newY >= 0 && newH >= 20) {
+                        y = newY;
+                        h = newH;
+                    }
+                }
+            }
+
+            sel.style.left = x + 'px';
+            sel.style.top = y + 'px';
+            sel.style.width = w + 'px';
+            sel.style.height = h + 'px';
+
+            // Update input fields
+            const scale = state.imageScale;
+            if (PicEdit.dom.cropWidth) PicEdit.dom.cropWidth.value = Math.round(w * scale);
+            if (PicEdit.dom.cropHeight) PicEdit.dom.cropHeight.value = Math.round(h * scale);
+            if (PicEdit.dom.cropX) PicEdit.dom.cropX.value = Math.round(x * scale);
+            if (PicEdit.dom.cropY) PicEdit.dom.cropY.value = Math.round(y * scale);
+
+            // Update dimensions display
+            if (PicEdit.dom.cropDimensions) {
+                PicEdit.dom.cropDimensions.textContent = `${Math.round(w * scale)} × ${Math.round(h * scale)}`;
+            }
+        },
+
+        onMouseUp() {
+            PicEdit.state.crop.isDragging = false;
+            PicEdit.state.crop.isResizing = false;
+            PicEdit.state.crop.resizeHandle = null;
+        },
+
+        show() {
+            const sel = PicEdit.dom.cropSelection;
+            const img = PicEdit.dom.preview;
+
+            if (!sel || !img || !PicEdit.state.currentImage) return;
+
+            // Show the selection overlay
+            sel.style.display = 'block';
+
+            // Calculate scale
+            const scale = PicEdit.state.currentImage.width / img.offsetWidth;
+            PicEdit.state.crop.imageScale = scale;
+
+            // Set default crop area (80% centered)
+            const imgW = img.offsetWidth;
+            const imgH = img.offsetHeight;
+            const margin = 0.1;
+            const x = imgW * margin;
+            const y = imgH * margin;
+            const w = imgW * (1 - 2 * margin);
+            const h = imgH * (1 - 2 * margin);
+
+            sel.style.left = x + 'px';
+            sel.style.top = y + 'px';
+            sel.style.width = w + 'px';
+            sel.style.height = h + 'px';
+
+            // Update input fields
+            if (PicEdit.dom.cropWidth) PicEdit.dom.cropWidth.value = Math.round(w * scale);
+            if (PicEdit.dom.cropHeight) PicEdit.dom.cropHeight.value = Math.round(h * scale);
+            if (PicEdit.dom.cropX) PicEdit.dom.cropX.value = Math.round(x * scale);
+            if (PicEdit.dom.cropY) PicEdit.dom.cropY.value = Math.round(y * scale);
+
+            if (PicEdit.dom.cropDimensions) {
+                PicEdit.dom.cropDimensions.textContent = `${Math.round(w * scale)} × ${Math.round(h * scale)}`;
+            }
+        },
+
+        hide() {
+            const sel = PicEdit.dom.cropSelection;
+            if (sel) sel.style.display = 'none';
+        }
+    },
+
     handlers: {
         handleFileSelect(e) {
             const files = Array.from(e.target.files);
-            ProResize.loader.processFiles(files);
+            if (files.length > 0) {
+                PicEdit.loader.loadImage(files[0]);
+            }
         },
 
         handleDrop(e) {
             e.preventDefault();
-            ProResize.dom.uploadZone.classList.remove('dragover');
+            PicEdit.dom.uploadZone.classList.remove('dragover');
             const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-            ProResize.loader.processFiles(files);
+            if (files.length > 0) {
+                PicEdit.loader.loadImage(files[0]);
+            }
         },
 
         downloadImage() {
-            if (!ProResize.auth.check()) return;
-            const d = ProResize.dom;
+            if (PicEdit.state.compressedBlob) {
+                const blob = PicEdit.state.compressedBlob;
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.download = `picedit_compressed.jpg`;
+                link.href = url;
+                link.click();
+                setTimeout(() => URL.revokeObjectURL(url), 100);
+                PicEdit.ui.showToast(`Downloaded: ${(blob.size / 1024).toFixed(2)} KB`, 'success');
+                return;
+            }
+
+            const d = PicEdit.dom;
             const format = d.downloadFormat.value;
-            const quality = parseInt(d.downloadQuality.value) / 100;
 
             const img = new Image();
             img.onload = () => {
@@ -137,107 +325,53 @@ const ProResize = {
                 const ctx = d.canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0);
 
-                const finalQuality = format === 'png' ? 1.0 : quality;
                 const mime = format === 'jpeg' ? 'image/jpeg' : format === 'png' ? 'image/png' : 'image/webp';
 
                 d.canvas.toBlob((blob) => {
-                    if (ProResize.auth.isAuthenticated()) {
-                        ProResize.api.saveImage(blob, format);
-                    }
-                    ProResize.ui.showToast('Image prepared for download', 'success');
+                    PicEdit.ui.showToast('Image ready for download', 'success');
                     const url = URL.createObjectURL(blob);
                     const link = document.createElement('a');
-                    link.download = `processed.${format}`;
+                    link.download = `picedit_image.${format}`;
                     link.href = url;
                     link.click();
                     setTimeout(() => URL.revokeObjectURL(url), 100);
-                }, mime, finalQuality);
+                }, mime, 1.0);
             };
             img.src = d.preview.src;
-        },
-
-        async downloadAllAsZip() {
-            if (!ProResize.auth.check()) return;
-            const zip = new JSZip();
-            ProResize.state.processedImages.forEach(img => {
-                const base64Data = img.data.split(',')[1];
-                zip.file(img.name, base64Data, { base64: true });
-            });
-            const blob = await zip.generateAsync({ type: 'blob' });
-            const link = document.createElement('a');
-            link.download = 'processed_images.zip';
-            link.href = URL.createObjectURL(blob);
-            link.click();
         }
     },
 
-    // Image Loading Logic
     loader: {
-        processFiles(files) {
-            if (!files.length) return;
-            ProResize.state.images = files;
-            ProResize.dom.batchCount.textContent = files.length;
+        loadImage(file) {
+            PicEdit.state.originalFileSize = file.size;
+            PicEdit.state.compressedBlob = null;
 
-            if (files.length === 1) this.loadSingle(files[0]);
-            else this.loadBatch(files);
-
-            ProResize.ui.showProcessingArea();
-            ProResize.ui.showToast(`Loaded ${files.length} image(s) successfully`, 'success');
-        },
-
-        loadSingle(file) {
             const reader = new FileReader();
             reader.onload = (e) => {
                 const img = new Image();
                 img.onload = () => {
-                    ProResize.state.currentImage = img;
-                    ProResize.state.originalImage = img;
-                    ProResize.state.originalAspectRatio = img.width / img.height;
+                    PicEdit.state.currentImage = img;
+                    PicEdit.state.originalImage = img;
+                    PicEdit.state.originalAspectRatio = img.width / img.height;
 
-                    ProResize.dom.preview.src = e.target.result;
-                    ProResize.dom.originalPreview.src = e.target.result;
+                    PicEdit.dom.preview.src = e.target.result;
+                    PicEdit.dom.originalPreview.src = e.target.result;
 
-                    ProResize.dom.width.value = img.width;
-                    ProResize.dom.height.value = img.height;
+                    PicEdit.dom.width.value = img.width;
+                    PicEdit.dom.height.value = img.height;
 
-                    ProResize.ui.updateMetadata(file, img);
-                    ProResize.ui.switchTab('resize');
+                    PicEdit.ui.updateMetadata(file, img);
+                    PicEdit.ui.updateCurrentSizeDisplay();
+                    PicEdit.ui.showProcessingArea();
+                    PicEdit.ui.switchTab('resize');
+                    PicEdit.ui.showToast('Image loaded successfully', 'success');
                 };
                 img.src = e.target.result;
             };
             reader.readAsDataURL(file);
-        },
-
-        loadBatch(files) {
-            ProResize.dom.batchGallery.innerHTML = '';
-            files.forEach((file, index) => {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const item = document.createElement('div');
-                    item.className = 'batch-item';
-                    item.innerHTML = `
-                        <img src="${e.target.result}" alt="${file.name}">
-                        <div class="batch-item-name">${file.name}</div>
-                        <button class="batch-item-remove" onclick="ProResize.loader.removeBatchItem(${index})"><i class="fas fa-times"></i></button>
-                    `;
-                    ProResize.dom.batchGallery.appendChild(item);
-                };
-                reader.readAsDataURL(file);
-            });
-            this.loadSingle(files[0]); // Preview first
-            ProResize.ui.switchTab('batch');
-        },
-
-        removeBatchItem(index) {
-            ProResize.state.images.splice(index, 1);
-            if (ProResize.state.images.length === 0) ProResize.ui.resetToUpload();
-            else this.loadBatch(ProResize.state.images);
-        },
-
-
+        }
     },
 
-    // UI Updates & Interactions
     ui: {
         initTabs() {
             document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -246,15 +380,82 @@ const ProResize = {
         },
 
         switchTab(name) {
+            // Update tab buttons
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
             document.querySelectorAll('.tab-pane').forEach(p => p.classList.toggle('active', p.id === `${name}Tab`));
+
+            // Update header feature badges
+            document.querySelectorAll('.feature-badge[data-tab]').forEach(badge => {
+                badge.classList.toggle('active', badge.dataset.tab === name);
+            });
+
+            if (name === 'compress') {
+                this.updateCurrentSizeDisplay();
+                this.updateEstimatedSize();
+            }
+
+            // Show/hide crop overlay based on tab
+            if (name === 'crop') {
+                this.updateCropDisplay();
+                // Small delay to ensure image is rendered
+                setTimeout(() => PicEdit.crop.show(), 100);
+            } else {
+                PicEdit.crop.hide();
+            }
+        },
+
+        updateCropDisplay() {
+            const img = PicEdit.state.currentImage;
+            if (!img) return;
+
+            if (PicEdit.dom.cropOriginalSize) {
+                PicEdit.dom.cropOriginalSize.textContent = `${img.width} × ${img.height} px`;
+            }
+        },
+
+        applyCropPreset(ratio) {
+            const img = PicEdit.state.currentImage;
+            const previewImg = PicEdit.dom.preview;
+            const sel = PicEdit.dom.cropSelection;
+            if (!img || !previewImg || !sel || ratio === 'free') return;
+
+            const [w, h] = ratio.split(':').map(Number);
+            const aspectRatio = w / h;
+
+            const imgW = previewImg.offsetWidth;
+            const imgH = previewImg.offsetHeight;
+
+            let cropW = imgW * 0.8;
+            let cropH = cropW / aspectRatio;
+
+            if (cropH > imgH * 0.8) {
+                cropH = imgH * 0.8;
+                cropW = cropH * aspectRatio;
+            }
+
+            const x = (imgW - cropW) / 2;
+            const y = (imgH - cropH) / 2;
+
+            sel.style.left = x + 'px';
+            sel.style.top = y + 'px';
+            sel.style.width = cropW + 'px';
+            sel.style.height = cropH + 'px';
+
+            const scale = PicEdit.state.crop.imageScale;
+            if (PicEdit.dom.cropWidth) PicEdit.dom.cropWidth.value = Math.round(cropW * scale);
+            if (PicEdit.dom.cropHeight) PicEdit.dom.cropHeight.value = Math.round(cropH * scale);
+            if (PicEdit.dom.cropX) PicEdit.dom.cropX.value = Math.round(x * scale);
+            if (PicEdit.dom.cropY) PicEdit.dom.cropY.value = Math.round(y * scale);
+
+            if (PicEdit.dom.cropDimensions) {
+                PicEdit.dom.cropDimensions.textContent = `${Math.round(cropW * scale)} × ${Math.round(cropH * scale)}`;
+            }
         },
 
         initControls() {
-            const d = ProResize.dom;
-            const state = ProResize.state;
+            const d = PicEdit.dom;
+            const state = PicEdit.state;
 
-            // Dimensions linking
             d.width?.addEventListener('input', () => {
                 if (state.aspectRatioLocked) d.height.value = Math.round(d.width.value / state.originalAspectRatio);
             });
@@ -262,53 +463,58 @@ const ProResize = {
                 if (state.aspectRatioLocked) d.width.value = Math.round(d.height.value * state.originalAspectRatio);
             });
 
-            // Filters
             ['brightness', 'contrast', 'saturation', 'blur'].forEach(f => {
                 document.getElementById(f)?.addEventListener('input', (e) => {
                     document.getElementById(`${f}Value`).textContent = e.target.value;
                     state.filters[f] = parseInt(e.target.value);
-                    ProResize.editor.updateFilterPreview();
+                    PicEdit.editor.updateFilterPreview();
                 });
-            });
-
-            // Toggle Modes
-            d.resizeMode?.addEventListener('change', () => {
-                const isDims = d.resizeMode.value === 'dimensions';
-                document.getElementById('dimensionControls').style.display = isDims ? 'block' : 'none';
-                document.getElementById('filesizeControls').style.display = isDims ? 'none' : 'block';
             });
         },
 
         showProcessingArea() {
-            ProResize.dom.uploadSection.style.display = 'none';
-            ProResize.dom.processingArea.style.display = 'block';
+            PicEdit.dom.uploadSection.style.display = 'none';
+            PicEdit.dom.processingArea.style.display = 'block';
         },
 
         resetToUpload() {
-            ProResize.dom.uploadSection.style.display = 'block';
-            ProResize.dom.processingArea.style.display = 'none';
-            ProResize.state.images = [];
+            PicEdit.dom.uploadSection.style.display = 'block';
+            PicEdit.dom.processingArea.style.display = 'none';
         },
 
         updateMetadata(file, img) {
             const sizeKB = (file.size / 1024).toFixed(2);
-            ProResize.dom.imageMetadata.innerHTML = `
+            PicEdit.dom.imageMetadata.innerHTML = `
                 <strong>File:</strong> ${file.name} | <strong>Size:</strong> ${sizeKB} KB | 
                 <strong>Dimensions:</strong> ${img.width}×${img.height} px
             `;
-            ProResize.dom.originalInfo.textContent = `${img.width}×${img.height} px • ${sizeKB} KB`;
+            PicEdit.dom.originalInfo.textContent = `${img.width}×${img.height} px • ${sizeKB} KB`;
+        },
+
+        updateCurrentSizeDisplay() {
+            const sizeKB = (PicEdit.state.originalFileSize / 1024).toFixed(2);
+            if (PicEdit.dom.currentSizeDisplay) {
+                PicEdit.dom.currentSizeDisplay.textContent = `${sizeKB} KB`;
+            }
+        },
+
+        updateEstimatedSize() {
+            const targetKB = parseInt(PicEdit.dom.targetSize?.value) || 100;
+            if (PicEdit.dom.estimatedSizeDisplay) {
+                PicEdit.dom.estimatedSizeDisplay.textContent = `~${targetKB} KB`;
+            }
         },
 
         toggleAspectLock() {
-            ProResize.state.aspectRatioLocked = !ProResize.state.aspectRatioLocked;
+            PicEdit.state.aspectRatioLocked = !PicEdit.state.aspectRatioLocked;
             const btn = document.getElementById('lockAspect');
             btn.classList.toggle('active');
-            btn.querySelector('i').className = ProResize.state.aspectRatioLocked ? 'fas fa-lock' : 'fas fa-unlock';
+            btn.querySelector('i').className = PicEdit.state.aspectRatioLocked ? 'fas fa-lock' : 'fas fa-unlock';
         },
 
         toggleComparison() {
-            const cv = ProResize.dom.comparisonView;
-            const sv = ProResize.dom.singleView;
+            const cv = PicEdit.dom.comparisonView;
+            const sv = PicEdit.dom.singleView;
             const isComparing = cv.style.display !== 'none';
             cv.style.display = isComparing ? 'none' : 'grid';
             sv.style.display = isComparing ? 'block' : 'none';
@@ -323,13 +529,12 @@ const ProResize = {
                 vibrant: { brightness: 105, contrast: 110, saturation: 150, blur: 0 },
                 reset: { brightness: 100, contrast: 100, saturation: 100, blur: 0 }
             };
-            ProResize.state.filters = presets[name];
-            // Update sliders UI
-            Object.entries(ProResize.state.filters).forEach(([k, v]) => {
+            PicEdit.state.filters = presets[name];
+            Object.entries(PicEdit.state.filters).forEach(([k, v]) => {
                 const el = document.getElementById(k);
                 if (el) { el.value = v; document.getElementById(`${k}Value`).textContent = v; }
             });
-            ProResize.editor.updateFilterPreview();
+            PicEdit.editor.updateFilterPreview();
         },
 
         showToast(message, type = 'info') {
@@ -344,14 +549,9 @@ const ProResize = {
 
             const toast = document.createElement('div');
             toast.className = `toast ${type}`;
-            toast.innerHTML = `
-                <i class="fas ${iconMap[type]}"></i>
-                <span>${message}</span>
-            `;
+            toast.innerHTML = `<i class="fas ${iconMap[type]}"></i><span>${message}</span>`;
 
             container.appendChild(toast);
-
-            // Trigger reflow for transition
             requestAnimationFrame(() => toast.classList.add('show'));
 
             setTimeout(() => {
@@ -361,115 +561,170 @@ const ProResize = {
         }
     },
 
-    // Core Image Logic
     editor: {
         applyResize() {
-            if (!ProResize.state.currentImage) return;
-            const d = ProResize.dom;
+            if (!PicEdit.state.currentImage) return;
+            PicEdit.state.compressedBlob = null;
+
+            const d = PicEdit.dom;
             const width = parseInt(d.width.value);
             const height = parseInt(d.height.value);
-            const quality = parseInt(d.quality.value) / 100;
 
             d.canvas.width = width;
             d.canvas.height = height;
             const ctx = d.canvas.getContext('2d');
-            ctx.drawImage(ProResize.state.currentImage, 0, 0, width, height);
+            ctx.drawImage(PicEdit.state.currentImage, 0, 0, width, height);
 
             const format = d.outputFormat.value;
-            const dataUrl = d.canvas.toDataURL(`image/${format}`, quality);
+            const dataUrl = d.canvas.toDataURL(`image/${format}`, 1.0);
 
             this.updatePreview(dataUrl);
             this.updateProcessedInfo(dataUrl, width, height);
-            ProResize.dom.downloadSection.style.display = 'flex';
+            PicEdit.dom.downloadSection.style.display = 'flex';
+            PicEdit.ui.showToast('Resize applied', 'success');
+        },
+
+        applyCompress() {
+            if (!PicEdit.state.currentImage) return;
+
+            const targetKB = parseInt(PicEdit.dom.targetSize?.value) || 100;
+            const targetBytes = targetKB * 1024;
+            const img = PicEdit.state.currentImage;
+            const canvas = PicEdit.dom.canvas;
+
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+
+            PicEdit.ui.showToast('Compressing...', 'info');
+
+            let minQuality = 0.01, maxQuality = 1.0, bestBlob = null, iterations = 0;
+
+            const tryQuality = (quality) => new Promise((resolve) => {
+                canvas.toBlob((blob) => resolve({ blob, quality }), 'image/jpeg', quality);
+            });
+
+            const findOptimal = async () => {
+                const minResult = await tryQuality(0.01);
+                if (minResult.blob.size > targetBytes) {
+                    const scaleFactor = Math.sqrt(targetBytes / minResult.blob.size);
+                    canvas.width = Math.floor(img.width * scaleFactor);
+                    canvas.height = Math.floor(img.height * scaleFactor);
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                }
+
+                while (iterations++ < 15) {
+                    const q = (minQuality + maxQuality) / 2;
+                    const r = await tryQuality(q);
+                    if (!bestBlob || Math.abs(r.blob.size - targetBytes) < Math.abs(bestBlob.size - targetBytes)) bestBlob = r.blob;
+                    if (Math.abs(r.blob.size - targetBytes) < targetBytes * 0.05) break;
+                    if (r.blob.size > targetBytes) maxQuality = q; else minQuality = q;
+                }
+                return bestBlob;
+            };
+
+            findOptimal().then((blob) => {
+                PicEdit.state.compressedBlob = blob;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    this.updatePreview(e.target.result);
+                    const kb = (blob.size / 1024).toFixed(2);
+                    PicEdit.dom.processedInfo.textContent = `${canvas.width}×${canvas.height} px • ${kb} KB`;
+                    PicEdit.dom.estimatedSizeDisplay.textContent = `${kb} KB (actual)`;
+                    PicEdit.dom.downloadSection.style.display = 'flex';
+                    PicEdit.ui.showToast(`Compressed to ${kb} KB`, 'success');
+                };
+                reader.readAsDataURL(blob);
+            });
         },
 
         applyFilters() {
-            // Basic implementation applying CSS filter string to canvas
-            if (!ProResize.state.currentImage) return;
-            const f = ProResize.state.filters;
-            const cvs = ProResize.dom.canvas;
+            if (!PicEdit.state.currentImage) return;
+            PicEdit.state.compressedBlob = null;
+
+            const f = PicEdit.state.filters;
+            const cvs = PicEdit.dom.canvas;
             const ctx = cvs.getContext('2d');
 
-            cvs.width = ProResize.state.currentImage.width;
-            cvs.height = ProResize.state.currentImage.height;
+            cvs.width = PicEdit.state.currentImage.width;
+            cvs.height = PicEdit.state.currentImage.height;
 
             ctx.filter = `brightness(${f.brightness}%) contrast(${f.contrast}%) saturate(${f.saturation}%) blur(${f.blur}px)`;
-            ctx.drawImage(ProResize.state.currentImage, 0, 0);
+            ctx.drawImage(PicEdit.state.currentImage, 0, 0);
 
-            const dataUrl = cvs.toDataURL('image/png');
+            const dataUrl = cvs.toDataURL('image/png', 1.0);
             this.updatePreview(dataUrl);
-            ProResize.dom.downloadSection.style.display = 'flex';
+            PicEdit.dom.downloadSection.style.display = 'flex';
+            PicEdit.ui.showToast('Filters applied', 'success');
         },
 
-        // Simplified convenience for applying result to current state
         updatePreview(dataUrl) {
             const img = new Image();
             img.onload = () => {
-                ProResize.state.currentImage = img;
-                ProResize.dom.preview.src = dataUrl;
-                ProResize.dom.processedPreview.src = dataUrl;
-                ProResize.dom.preview.style.filter = 'none'; // Clear CSS preview filter
+                PicEdit.state.currentImage = img;
+                PicEdit.dom.preview.src = dataUrl;
+                PicEdit.dom.processedPreview.src = dataUrl;
+                PicEdit.dom.preview.style.filter = 'none';
             };
             img.src = dataUrl;
         },
 
         updateFilterPreview() {
-            const f = ProResize.state.filters;
-            ProResize.dom.preview.style.filter = `brightness(${f.brightness}%) contrast(${f.contrast}%) saturate(${f.saturation}%) blur(${f.blur}px)`;
+            const f = PicEdit.state.filters;
+            PicEdit.dom.preview.style.filter = `brightness(${f.brightness}%) contrast(${f.contrast}%) saturate(${f.saturation}%) blur(${f.blur}px)`;
         },
 
         resetImage() {
-            ProResize.state.currentImage = ProResize.state.originalImage;
-            ProResize.dom.preview.src = ProResize.state.originalImage.src;
-            ProResize.dom.preview.style.filter = 'none';
-            ProResize.ui.applyPresetFilter('reset');
+            PicEdit.state.currentImage = PicEdit.state.originalImage;
+            PicEdit.state.compressedBlob = null;
+            PicEdit.dom.preview.src = PicEdit.state.originalImage.src;
+            PicEdit.dom.preview.style.filter = 'none';
+            PicEdit.ui.applyPresetFilter('reset');
+            PicEdit.ui.showToast('Image reset to original', 'info');
         },
 
-        // Placeholder for advanced features: crop and batch would follow similar patterns
-        applyCrop() { alert('Crop functionality simplified for audit fix.'); },
-        processBatch() { alert('Batch functionality simplified for audit fix.'); },
+        applyCrop() {
+            if (!PicEdit.state.currentImage) return;
+            PicEdit.state.compressedBlob = null;
+
+            const img = PicEdit.state.currentImage;
+            const cropW = parseInt(PicEdit.dom.cropWidth?.value) || img.width;
+            const cropH = parseInt(PicEdit.dom.cropHeight?.value) || img.height;
+            const cropX = parseInt(PicEdit.dom.cropX?.value) || 0;
+            const cropY = parseInt(PicEdit.dom.cropY?.value) || 0;
+
+            if (cropX < 0 || cropY < 0 || cropX + cropW > img.width || cropY + cropH > img.height) {
+                PicEdit.ui.showToast('Crop area exceeds image bounds!', 'error');
+                return;
+            }
+
+            if (cropW <= 0 || cropH <= 0) {
+                PicEdit.ui.showToast('Invalid crop dimensions!', 'error');
+                return;
+            }
+
+            const canvas = PicEdit.dom.canvas;
+            canvas.width = cropW;
+            canvas.height = cropH;
+            const ctx = canvas.getContext('2d');
+
+            ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+            const dataUrl = canvas.toDataURL('image/png', 1.0);
+            this.updatePreview(dataUrl);
+            this.updateProcessedInfo(dataUrl, cropW, cropH);
+
+            PicEdit.crop.hide();
+            PicEdit.dom.downloadSection.style.display = 'flex';
+            PicEdit.ui.showToast(`Cropped to ${cropW}×${cropH} px`, 'success');
+        },
 
         updateProcessedInfo(dataUrl, w, h) {
-            // simplified logic to estimate size
-            const head = 'data:image/png;base64,';
-            const size = Math.round((dataUrl.length - head.length) * 3 / 4) / 1024;
-            ProResize.dom.processedInfo.textContent = `${w}×${h} px • ${size.toFixed(2)} KB`;
-        }
-    },
-
-    // API & Auth
-    auth: {
-        isAuthenticated() {
-            return typeof USER_IS_AUTHENTICATED !== 'undefined' && USER_IS_AUTHENTICATED;
-        },
-        check() {
-            if (!this.isAuthenticated()) {
-                ProResize.dom.authModal.style.display = 'flex';
-                return false;
-            }
-            return true;
-        }
-    },
-
-    api: {
-        saveImage(blob, format) {
-            const formData = new FormData();
-            formData.append('image', blob, `processed.${format}`);
-            formData.append('filename', `saved-${Date.now()}.${format}`);
-
-            fetch(SAVE_IMAGE_URL, {
-                method: 'POST',
-                headers: { 'X-CSRFToken': CSRF_TOKEN },
-                body: formData
-            }).then(() => {
-                ProResize.ui.showToast('Image saved to your history', 'success');
-            }).catch(err => {
-                console.error(err);
-                ProResize.ui.showToast('Failed to save image', 'error');
-            });
+            const size = Math.round((dataUrl.length - 22) * 3 / 4) / 1024;
+            PicEdit.dom.processedInfo.textContent = `${w}×${h} px • ${size.toFixed(2)} KB`;
         }
     }
 };
 
-// Start
-document.addEventListener('DOMContentLoaded', () => ProResize.init());
+document.addEventListener('DOMContentLoaded', () => PicEdit.init());

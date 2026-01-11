@@ -1,25 +1,52 @@
 {% extends 'core/base.html' %}
 {% load static %}
 
-{% block extra_head %}
-<script>
-    const USER_IS_AUTHENTICATED = "{{ user.is_authenticated|yesno:'true,false' }}" === "true";
-    const SAVE_IMAGE_URL = "{% url 'save_image' %}";
-    const CSRF_TOKEN = "{{ csrf_token }}";
-</script>
-{% endblock %}
-
 {% block content %}
 <!-- Upload Section -->
 <section class="upload-section" id="uploadSection">
     <div class="upload-zone" id="uploadZone">
         <i class="fas fa-cloud-upload-alt upload-icon"></i>
-        <h2>Drop images here or click to upload</h2>
-        <p>Support for JPEG, PNG, WebP • Single or multiple files</p>
-        <input type="file" id="imageInput" accept="image/*" multiple hidden>
-        <button class="btn-primary" onclick="document.getElementById('imageInput').click()">
+        <h2>Drop image here or click to upload</h2>
+        <p>Support for JPEG, PNG, WebP</p>
+        <input type="file" id="imageInput" accept="image/*" hidden>
+        <button class="btn-primary" onclick="event.stopPropagation(); document.getElementById('imageInput').click()">
             <i class="fas fa-folder-open"></i> Browse Files
         </button>
+    </div>
+
+    <!-- Features Showcase -->
+    <div class="features-showcase">
+        <h3 class="features-title">What You Can Do</h3>
+        <div class="feature-cards">
+            <div class="feature-card">
+                <div class="feature-card-icon">
+                    <i class="fas fa-expand-arrows-alt"></i>
+                </div>
+                <h4>Resize</h4>
+                <p>Change image dimensions with aspect ratio lock. Scale up or down to any size.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-card-icon">
+                    <i class="fas fa-compress-alt"></i>
+                </div>
+                <h4>Compress</h4>
+                <p>Reduce file size to target KB. Perfect for web uploads and email attachments.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-card-icon">
+                    <i class="fas fa-magic"></i>
+                </div>
+                <h4>Filters</h4>
+                <p>Adjust brightness, contrast, saturation. Apply grayscale, sepia, vintage effects.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-card-icon">
+                    <i class="fas fa-crop-alt"></i>
+                </div>
+                <h4>Crop</h4>
+                <p>Visual crop with drag handles. Quick presets for 1:1, 4:3, 16:9 ratios.</p>
+            </div>
+        </div>
     </div>
 </section>
 
@@ -57,7 +84,20 @@
                             </div>
                         </div>
                         <div class="single-view" id="singleView">
-                            <img id="preview" alt="Preview">
+                            <div class="preview-image-container" id="previewImageContainer">
+                                <img id="preview" alt="Preview">
+                                <div class="crop-selection" id="cropSelection" style="display: none;">
+                                    <div class="crop-handle nw" data-handle="nw"></div>
+                                    <div class="crop-handle n" data-handle="n"></div>
+                                    <div class="crop-handle ne" data-handle="ne"></div>
+                                    <div class="crop-handle w" data-handle="w"></div>
+                                    <div class="crop-handle e" data-handle="e"></div>
+                                    <div class="crop-handle sw" data-handle="sw"></div>
+                                    <div class="crop-handle s" data-handle="s"></div>
+                                    <div class="crop-handle se" data-handle="se"></div>
+                                    <div class="crop-dimensions" id="cropDimensions">0 × 0</div>
+                                </div>
+                            </div>
                             <canvas id="canvas" style="display: none;"></canvas>
                         </div>
                     </div>
@@ -70,24 +110,6 @@
         <!-- Right Panel: Controls -->
         <div class="workspace-right">
 
-            <div class="controls-header">
-                <!-- Tab Navigation -->
-                <div class="tab-navigation">
-                    <button class="tab-btn active" data-tab="resize">
-                        <i class="fas fa-expand-arrows-alt"></i> Resize
-                    </button>
-                    <button class="tab-btn" data-tab="filters">
-                        <i class="fas fa-magic"></i> Filters
-                    </button>
-                    <button class="tab-btn" data-tab="crop">
-                        <i class="fas fa-crop"></i> Crop
-                    </button>
-                    <button class="tab-btn" data-tab="batch">
-                        <i class="fas fa-layer-group"></i> Batch (<span id="batchCount">0</span>)
-                    </button>
-                </div>
-            </div>
-
             <div class="controls-scroll-area">
                 <!-- Tab Content -->
                 <div class="tab-content">
@@ -95,13 +117,6 @@
                     <div class="tab-pane active" id="resizeTab">
                         <div class="control-section">
                             <h3><i class="fas fa-sliders-h"></i> Resize Options</h3>
-                            <div class="control-group">
-                                <label for="resizeMode">Resize Mode:</label>
-                                <select id="resizeMode">
-                                    <option value="dimensions">By Dimensions (Width × Height)</option>
-                                    <option value="filesize">By File Size (KB)</option>
-                                </select>
-                            </div>
                             <div class="dimension-controls" id="dimensionControls">
                                 <div class="control-group">
                                     <label for="width">
@@ -123,36 +138,43 @@
                                     </div>
                                 </div>
                             </div>
-                            <div class="dimension-controls" id="filesizeControls" style="display: none;">
-                                <div class="control-group">
-                                    <label for="targetFileSize">Target File Size:</label>
-                                    <div class="input-with-unit">
-                                        <input type="number" id="targetFileSize" placeholder="e.g., 50" min="1"
-                                            value="50">
-                                        <span class="unit">KB</span>
-                                    </div>
-                                </div>
-                                <div class="crop-info">
-                                    <p><i class="fas fa-info-circle"></i> Image will be compressed to approximately the
-                                        target file size</p>
-                                </div>
-                            </div>
                             <div class="control-group">
                                 <label for="outputFormat">Output Format:</label>
                                 <select id="outputFormat">
-                                    <option value="jpeg">JPEG</option>
                                     <option value="png">PNG</option>
+                                    <option value="jpeg">JPEG</option>
                                     <option value="webp">WebP</option>
                                 </select>
                             </div>
-                            <div class="control-group">
-                                <label for="quality">
-                                    Quality: <span id="qualityValue">80</span>%
-                                </label>
-                                <input type="range" id="quality" min="1" max="100" value="80">
-                            </div>
                             <button class="btn-primary btn-large" id="applyResize">
                                 <i class="fas fa-check"></i> Apply Resize
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Compress Tab -->
+                    <div class="tab-pane" id="compressTab">
+                        <div class="control-section">
+                            <h3><i class="fas fa-compress-arrows-alt"></i> Compress Image</h3>
+                            <div class="control-group">
+                                <label for="targetSize">Target File Size:</label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="targetSize" placeholder="e.g., 100" min="1" value="100">
+                                    <span class="unit">KB</span>
+                                </div>
+                            </div>
+                            <div class="crop-info">
+                                <p><i class="fas fa-info-circle"></i> Image will be compressed to approximately the
+                                    target size. Works best with JPEG/WebP formats.</p>
+                            </div>
+                            <div class="control-group">
+                                <label>Current Size: <strong id="currentSizeDisplay">-- KB</strong></label>
+                            </div>
+                            <div class="control-group">
+                                <label>Estimated Output: <strong id="estimatedSizeDisplay">-- KB</strong></label>
+                            </div>
+                            <button class="btn-primary btn-large" id="applyCompress">
+                                <i class="fas fa-compress"></i> Compress Image
                             </button>
                         </div>
                     </div>
@@ -198,7 +220,42 @@
                         <div class="control-section">
                             <h3><i class="fas fa-crop-alt"></i> Crop Image</h3>
                             <div class="control-group">
-                                <label for="cropRatio">Aspect Ratio:</label>
+                                <label>Original Size: <strong id="cropOriginalSize">-- × -- px</strong></label>
+                            </div>
+                            <div class="dimension-controls">
+                                <div class="control-group">
+                                    <label for="cropWidth">Crop Width:</label>
+                                    <div class="input-with-unit">
+                                        <input type="number" id="cropWidth" placeholder="Width" min="1">
+                                        <span class="unit">px</span>
+                                    </div>
+                                </div>
+                                <div class="control-group">
+                                    <label for="cropHeight">Crop Height:</label>
+                                    <div class="input-with-unit">
+                                        <input type="number" id="cropHeight" placeholder="Height" min="1">
+                                        <span class="unit">px</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="dimension-controls">
+                                <div class="control-group">
+                                    <label for="cropX">X Offset:</label>
+                                    <div class="input-with-unit">
+                                        <input type="number" id="cropX" placeholder="0" min="0" value="0">
+                                        <span class="unit">px</span>
+                                    </div>
+                                </div>
+                                <div class="control-group">
+                                    <label for="cropY">Y Offset:</label>
+                                    <div class="input-with-unit">
+                                        <input type="number" id="cropY" placeholder="0" min="0" value="0">
+                                        <span class="unit">px</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="control-group">
+                                <label for="cropRatio">Quick Presets:</label>
                                 <select id="cropRatio">
                                     <option value="free">Free Form</option>
                                     <option value="1:1">1:1 (Square)</option>
@@ -209,33 +266,12 @@
                                 </select>
                             </div>
                             <div class="crop-info">
-                                <p><i class="fas fa-info-circle"></i> Click and drag on the image to select crop area
-                                </p>
+                                <p><i class="fas fa-info-circle"></i> Enter dimensions and offset to crop from top-left
+                                    corner</p>
                             </div>
                             <button class="btn-primary btn-large" id="applyCrop">
                                 <i class="fas fa-check"></i> Apply Crop
                             </button>
-                        </div>
-                    </div>
-
-                    <!-- Batch Tab -->
-                    <div class="tab-pane" id="batchTab">
-                        <div class="control-section">
-                            <h3><i class="fas fa-images"></i> Batch Processing</h3>
-                            <div class="batch-gallery" id="batchGallery"></div>
-                            <div class="batch-controls">
-                                <p class="batch-info"><i class="fas fa-info-circle"></i> Settings from Resize tab will
-                                    be applied to all images</p>
-                                <div class="progress-container" id="progressContainer" style="display: none;">
-                                    <div class="progress-bar">
-                                        <div class="progress-fill" id="progressFill"></div>
-                                    </div>
-                                    <p class="progress-text" id="progressText">Processing: 0%</p>
-                                </div>
-                                <button class="btn-primary btn-large" id="processBatch">
-                                    <i class="fas fa-cogs"></i> Process All Images
-                                </button>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -248,21 +284,14 @@
                         <label for="downloadFormat">Download Format:</label>
                         <select id="downloadFormat">
                             <option value="png">PNG (Lossless)</option>
-                            <option value="jpeg">JPEG (Compressed)</option>
+                            <option value="jpeg">JPEG</option>
                             <option value="webp">WebP (Modern)</option>
                         </select>
-                    </div>
-                    <div class="control-group download-quality-group" id="downloadQualityGroup">
-                        <label for="downloadQuality">Quality: <span id="downloadQualityValue">90</span>%</label>
-                        <input type="range" id="downloadQuality" min="1" max="100" value="90">
                     </div>
                 </div>
                 <div class="download-buttons">
                     <button class="btn-success btn-large" id="downloadBtn">
                         <i class="fas fa-download"></i> Download Image
-                    </button>
-                    <button class="btn-success btn-large" id="downloadAllBtn" style="display: none;">
-                        <i class="fas fa-file-archive"></i> Download All as ZIP
                     </button>
                 </div>
             </div>
@@ -273,6 +302,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="{% static 'core/js/script.js' %}"></script>
 {% endblock %}
