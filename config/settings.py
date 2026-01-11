@@ -26,11 +26,11 @@ SECRET_KEY = os.environ.get('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 
-if not SECRET_KEY and not DEBUG:
-    raise ValueError("SECRET_KEY environment variable not set!")
-elif not SECRET_KEY:
-    # Fallback only for local development
-    SECRET_KEY = 'django-insecure-local-dev-key'
+if not SECRET_KEY:
+    import secrets
+    SECRET_KEY = secrets.token_urlsafe(50)
+    import logging
+    logging.warning("SECRET_KEY not set! Generated a temporary key. Set SECRET_KEY env var for production.")
 
 ALLOWED_HOSTS = []
 
