@@ -168,14 +168,18 @@ STATICFILES_DIRS = [
 ]
 
 # Django 5.0+ uses STORAGES instead of deprecated STATICFILES_STORAGE
+# Using CompressedStaticFilesStorage (non-manifest) to avoid manifest errors on deployment
 STORAGES = {
     "default": {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
     },
     "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
 }
+
+# Fallback for older Django versions or compatibility issues
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 
 # Default primary key field type
